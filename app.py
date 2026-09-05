@@ -94,6 +94,81 @@ async def webhook(request: Request):
     
     return {"status": "ignored"}
 
+@app.get("/analyze-public-pr")
+async def analyze_public_pr(pr_number: int):
+    """
+    Manually analyze a specific PR in the public Mixxx repository.
+    Usage: https://mixxx-pr-analyzer.onrender.com/analyze-public-pr?pr_number=12345
+    """
+    
+    if not GEMINI_API_KEY:
+        return {"error": "Gemini API key not configured"}
+    
+    try:
+        print(f"🔍 Manually analyzing PR #{pr_number} from public Mixxx repo")
+        print("-" * 60)
+        
+        # Get PR details from public GitHub API (no token needed for public repos)
+        async with httpx.AsyncClient() as client:
+            pr_response = await client.get(
+                f"https://api.github.com/repos/mixxxdj/mixxx/pulls/{pr_number}"
+            )
+            
+            if pr_response.status_code != 200:
+                return {
+                    "error": f"Failed to fetch PR #{pr_number}",
+                    "status": pr_response.status_code,
+                    "message": pr_response.text[:200]
+                }
+            
+            pr_data = pr_response.json()
+            
+            # Get PR diff
+            diff_response = await client.get(pr_data["diff_url"])
+            diff_content = diff_response.text
+        
+        # Extract PR details
+        pr_title = pr_data["title"]
+        pr_body = pr_data.get("body", "")
+        pr_author = pr_data["user"]["login"]
+        pr_html_url = pr_data["html_url"]
+        
+        print(f"📥 PR #{pr_number}: {pr_title} by @{pr_author}")
+        print(f"🔗 {pr_html_url}")
+        print("-" * 60)
+        
+        # Analyze with Gemini
+        analysis = await analyze_pr_with_gemini_http(
+            diff_content,
+            pr_body,
+            pr_title,
+            pr_author
+        )
+        
+        # Format the draft review
+        draft_review = format_review_comment(analysis, pr_author)
+        
+        # Print to logs
+        print("\n" + "=" * 70)
+        print("📝 DRAFT REVIEW (Copy and paste this into the PR)")
+        print("=" * 70)
+        print(draft_review)
+        print("=" * 70)
+        
+        # Return the review in the response too
+        return {
+            "status": "success",
+            "pr_number": pr_number,
+            "pr_url": pr_html_url,
+            "review": draft_review
+        }
+        
+    except Exception as e:
+        error_msg = f"Error analyzing PR #{pr_number}: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
+
+
 async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, author: str) -> str:
     """Use Google Gemini via direct HTTP API."""
     
