@@ -18,17 +18,22 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 def root():
     return {"status": "Mixxx PR Analyzer is running!"}
 
+@app.get("/health/")
 @app.get("/health")
 def health():
     return {"status": "healthy", "gemini_configured": GEMINI_API_KEY is not None}
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    """Main webhook endpoint for GitHub events."""
-    
     payload = await request.body()
     event = request.headers.get("X-GitHub-Event")
     signature = request.headers.get("X-Hub-Signature-256")
+    
+    # Debug: log the raw event
+    print(f"📨 Received event: {event}")
+    data = json.loads(payload)
+    print(f"📦 Action: {data.get('action')}")
+    print(f"📦 Repository: {data.get('repository', {}).get('full_name')}")
     
     # Verify webhook signature
     if GITHUB_WEBHOOK_SECRET:
