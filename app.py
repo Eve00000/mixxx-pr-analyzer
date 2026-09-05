@@ -25,6 +25,18 @@ def health():
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    # Get raw payload
+    payload = await request.body()
+    event = request.headers.get("X-GitHub-Event")
+    
+    # Parse the data
+    data = json.loads(payload)
+    
+    # Log everything
+    print(f"📨 Event: {event}")
+    print(f"📦 Full payload: {json.dumps(data, indent=2)[:500]}")  # First 500 chars
+    
+    # ... rest of your code ...
     payload = await request.body()
     event = request.headers.get("X-GitHub-Event")
     signature = request.headers.get("X-Hub-Signature-256")
