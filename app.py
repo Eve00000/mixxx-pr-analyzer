@@ -3,16 +3,24 @@ import json
 import hmac
 import hashlib
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
 import httpx
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 load_dotenv()
 
 app = FastAPI()
 
+# Environment variables
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Configure Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')  # Free tier model
+else:
+    model = None
 
 @app.get("/")
 def root():
@@ -20,7 +28,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    return {"status": "healthy", "gemini_configured": model is not None}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -48,72 +56,50 @@ async def webhook(request: Request):
         repo_name = data["repository"]["full_name"]
         pr_number = data["pull_request"]["number"]
         pr_title = data["pull_request"]["title"]
-        pr_body = data["pull_request"]["body"]
+        pr_body = data["pull_request"]["body"] or ""
         pr_diff_url = data["pull_request"]["diff_url"]
+        pr_author = data["pull_request"]["user"]["login"]
         
-        print(f"📥 PR #{pr_number} in {repo_name}: {pr_title}")
+        print(f"📥 PR #{pr_number} in {repo_name} by @{pr_author}: {pr_title}")
+        print("-" * 60)
         
         # Get the PR diff
         async with httpx.AsyncClient() as client:
             diff_response = await client.get(pr_diff_url)
             diff_content = diff_response.text
         
-        # Analyze with AI
-        analysis = await analyze_pr_with_ai(diff_content, pr_body, pr_title)
+        # Analyze with Gemini
+        analysis = await analyze_pr_with_gemini(diff_content, pr_body, pr_title, pr_author)
         
-        # Format and print the draft review (will be visible in Render logs)
-        print("\n" + "=" * 60)
-        print("📝 DRAFT REVIEW COMMENT (copy and paste)")
-        print("=" * 60)
-        print(analysis)
-        print("=" * 60)
+        # Format the draft review
+        draft_review = format_review_comment(analysis, pr_author)
+        
+        # Print to logs (you'll copy from Render logs)
+        print("\n" + "=" * 70)
+        print("📝 DRAFT REVIEW (Copy and paste this into the PR)")
+        print("=" * 70)
+        print(draft_review)
+        print("=" * 70)
         
         return {"status": "PR analyzed"}
     
     return {"status": "ignored"}
 
-async def analyze_pr_with_ai(diff: str, pr_body: str, pr_title: str) -> str:
-    """Use Claude to analyze the PR."""
+async def analyze_pr_with_gemini(diff: str, pr_body: str, pr_title: str, author: str) -> str:
+    """Use Google Gemini to analyze the PR."""
     
-    system_prompt = """You are a code review assistant analyzing a pull request for the Mixxx DJ software.
-You need to:
-1. Detect signs of AI-generated code (patterns like excessive comments, repetitive structures)
-2. Evaluate if the contributor understands the code
-3. Generate thoughtful questions about the logic and design
-4. Assess potential risks and edge cases"""
+    if not model:
+        return "⚠️ Gemini API key not configured. Please add GEMINI_API_KEY to environment variables."
     
-    user_prompt = f"""
-Title: {pr_title}
-Description: {pr_body[:1000]}
-Diff: {diff[:8000]}
+    # Limit diff length to avoid token limits (Gemini Flash has generous limits)
+    diff_preview = diff[:15000]  # Gemini Flash can handle ~1M tokens, but we'll be safe
+    
+    prompt = f"""
+You are a code review expert analyzing a pull request for the Mixxx DJ software project.
 
-Provide your analysis in this format:
-1. **Summary**: Brief overview of changes
-2. **AI Detection**: Signs of AI generation (if any)
-3. **Code Quality**: Observations
-4. **Questions**: 3-5 questions to test understanding
-5. **Risks**: Potential risks
-6. **Recommendation**: Final assessment
-"""
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": 2000,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_prompt}]
-            }
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result["content"][0]["text"]
-        else:
-            return f"❌ API Error: {response.status_code}"
+**Pull Request Details:**
+- Title: {pr_title}
+- Author: @{author}
+- Description: {pr_body[:1000]}
+
+**Code Changes (Diff):**
