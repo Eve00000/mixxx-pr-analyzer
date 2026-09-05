@@ -3,6 +3,7 @@ import json
 import hmac
 import hashlib
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import PlainTextResponse
 import httpx
 from dotenv import load_dotenv
 
@@ -26,18 +27,8 @@ def health():
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    # Get raw payload
-    payload = await request.body()
-    event = request.headers.get("X-GitHub-Event")
+    """Handle GitHub webhook events for PRs in your fork."""
     
-    # Parse the data
-    data = json.loads(payload)
-    
-    # Log everything
-    print(f"📨 Event: {event}")
-    print(f"📦 Full payload: {json.dumps(data, indent=2)[:500]}")  # First 500 chars
-    
-    # ... rest of your code ...
     payload = await request.body()
     event = request.headers.get("X-GitHub-Event")
     signature = request.headers.get("X-Hub-Signature-256")
@@ -95,16 +86,16 @@ async def webhook(request: Request):
     
     return {"status": "ignored"}
 
-# ✅ NEW: Manual endpoint for analyzing public Mixxx PRs
 @app.get("/analyze-public-pr")
 async def analyze_public_pr(pr_number: int):
     """
     Manually analyze a specific PR in the public Mixxx repository.
+    Returns plain text for easy reading.
     Usage: https://mixxx-pr-analyzer.onrender.com/analyze-public-pr?pr_number=12345
     """
     
     if not GEMINI_API_KEY:
-        return {"error": "Gemini API key not configured"}
+        return PlainTextResponse("Error: Gemini API key not configured")
     
     try:
         print(f"🔍 Manually analyzing PR #{pr_number} from public Mixxx repo")
@@ -123,11 +114,11 @@ async def analyze_public_pr(pr_number: int):
             )
             
             if pr_response.status_code != 200:
-                return {
-                    "error": f"Failed to fetch PR #{pr_number}",
-                    "status": pr_response.status_code,
-                    "message": pr_response.text[:200]
-                }
+                return PlainTextResponse(
+                    f"Error: Failed to fetch PR #{pr_number}\n"
+                    f"Status: {pr_response.status_code}\n"
+                    f"Message: {pr_response.text[:200]}"
+                )
             
             pr_data = pr_response.json()
             
@@ -140,6 +131,9 @@ async def analyze_public_pr(pr_number: int):
         pr_body = pr_data.get("body", "")
         pr_author = pr_data["user"]["login"]
         pr_html_url = pr_data["html_url"]
+        pr_state = pr_data["state"]
+        pr_created = pr_data["created_at"]
+        pr_updated = pr_data["updated_at"]
         
         print(f"📥 PR #{pr_number}: {pr_title} by @{pr_author}")
         print(f"🔗 {pr_html_url}")
@@ -163,18 +157,35 @@ async def analyze_public_pr(pr_number: int):
         print(draft_review)
         print("=" * 70)
         
-        # Return the review in the response too
-        return {
-            "status": "success",
-            "pr_number": pr_number,
-            "pr_url": pr_html_url,
-            "review": draft_review
-        }
+        # Return human-readable plain text
+        header = f"""
+╔══════════════════════════════════════════════════════════════════════╗
+║                    📋 PR ANALYSIS REPORT                            ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+  PR #{pr_number}: {pr_title}
+  Author: @{pr_author}
+  State: {pr_state}
+  Created: {pr_created}
+  Updated: {pr_updated}
+  URL: {pr_html_url}
+
+════════════════════════════════════════════════════════════════════════
+
+{draft_review}
+
+════════════════════════════════════════════════════════════════════════
+  💡 Copy the review above, edit it, and post it on the PR.
+  🔗 {pr_html_url}
+════════════════════════════════════════════════════════════════════════
+"""
+        
+        return PlainTextResponse(content=header, media_type="text/plain")
         
     except Exception as e:
         error_msg = f"Error analyzing PR #{pr_number}: {str(e)}"
         print(f"❌ {error_msg}")
-        return {"error": error_msg}
+        return PlainTextResponse(f"Error: {error_msg}")
 
 async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, author: str) -> str:
     """Use Google Gemini via direct HTTP API."""
@@ -203,13 +214,12 @@ async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, au
         "",
         "1. Summary: A brief overview of what this PR does (1-2 sentences).",
         "",
-        "2. AI Detection: Does this code show signs of being AI-generated? Look for:",
-        "   - Excessive or robotic comments",
-        "   - Unnatural variable/function names",
-        "   - Repetitive patterns that don't match project style",
-        "   - Code that doesn't fit the codebase architecture",
-        "   - Overly verbose or textbook-style implementations",
-        "   Rate as: HIGH / MEDIUM / LOW / NONE and explain why.",
+        "2. AI Detection & Disclosure:",
+        "   - First: Does the PR description, title, or commit messages explicitly mention AI assistance (e.g., 'Claude', 'ChatGPT', 'Copilot', 'AI-generated', 'written with AI')?",
+        "   - If YES: Rate as 'DISCLOSED - AI-Assisted'. Focus on evaluating code quality and understanding.",
+        "   - If NO: Look for stylistic signs of AI generation (robotic comments, unnatural patterns, repetitive structures, textbook-style implementations).",
+        "   - Rate as: DISCLOSED / HIGH / MEDIUM / LOW / NONE",
+        "   - Explain your reasoning clearly.",
         "",
         "3. Code Quality: Evaluate the code quality:",
         "   - Does it follow Mixxx's coding standards?",
@@ -220,6 +230,7 @@ async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, au
         "   - Why specific design decisions were made",
         "   - Edge cases they might not have considered",
         "   - How their code interacts with existing Mixxx features",
+        "   - Any trade-offs or alternatives they considered",
         "",
         "5. Risks & Edge Cases: What potential issues should a reviewer look for?",
         "",
@@ -230,7 +241,7 @@ async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, au
     
     prompt = "\n".join(prompt_lines)
     
-    # Gemini API endpoint
+    # Gemini API endpoint - using recommended model
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
     
     payload = {
@@ -284,7 +295,7 @@ def format_review_comment(analysis: str, author: str) -> str:
         "---",
         "",
         "### 📋 Maintainer Checklist Before Posting:",
-        "- [ ] Verify the AI detection assessment",
+        "- [ ] Verify the AI detection assessment (especially if AI was disclosed)",
         "- [ ] Check that the questions are relevant",
         "- [ ] Add any personal observations",
         "- [ ] Decide: APPROVE / REQUEST CHANGES / COMMENT",
