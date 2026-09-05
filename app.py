@@ -149,7 +149,7 @@ async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, au
     prompt = "\n".join(prompt_lines)
     
     # Gemini API endpoint
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
     
     payload = {
         "contents": [
