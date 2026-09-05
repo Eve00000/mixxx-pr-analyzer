@@ -13,6 +13,7 @@ app = FastAPI()
 # Environment variables
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # For public API rate limits
 
 @app.get("/")
 def root():
@@ -94,6 +95,7 @@ async def webhook(request: Request):
     
     return {"status": "ignored"}
 
+# ✅ NEW: Manual endpoint for analyzing public Mixxx PRs
 @app.get("/analyze-public-pr")
 async def analyze_public_pr(pr_number: int):
     """
@@ -108,10 +110,16 @@ async def analyze_public_pr(pr_number: int):
         print(f"🔍 Manually analyzing PR #{pr_number} from public Mixxx repo")
         print("-" * 60)
         
-        # Get PR details from public GitHub API (no token needed for public repos)
+        # Prepare headers with token if available
+        headers = {}
+        if GITHUB_TOKEN:
+            headers["Authorization"] = f"token {GITHUB_TOKEN}"
+        
+        # Get PR details from public GitHub API
         async with httpx.AsyncClient() as client:
             pr_response = await client.get(
-                f"https://api.github.com/repos/mixxxdj/mixxx/pulls/{pr_number}"
+                f"https://api.github.com/repos/mixxxdj/mixxx/pulls/{pr_number}",
+                headers=headers
             )
             
             if pr_response.status_code != 200:
@@ -167,7 +175,6 @@ async def analyze_public_pr(pr_number: int):
         error_msg = f"Error analyzing PR #{pr_number}: {str(e)}"
         print(f"❌ {error_msg}")
         return {"error": error_msg}
-
 
 async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, author: str) -> str:
     """Use Google Gemini via direct HTTP API."""
