@@ -5,7 +5,6 @@ import hashlib
 from fastapi import FastAPI, Request, HTTPException
 import httpx
 from dotenv import load_dotenv
-import google.generativeai as genai
 
 load_dotenv()
 
@@ -15,20 +14,13 @@ app = FastAPI()
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Configure Gemini
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-else:
-    model = None
-
 @app.get("/")
 def root():
     return {"status": "Mixxx PR Analyzer is running!"}
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "gemini_configured": model is not None}
+    return {"status": "healthy", "gemini_configured": GEMINI_API_KEY is not None}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -68,8 +60,8 @@ async def webhook(request: Request):
             diff_response = await client.get(pr_diff_url)
             diff_content = diff_response.text
         
-        # Analyze with Gemini
-        analysis = await analyze_pr_with_gemini(diff_content, pr_body, pr_title, pr_author)
+        # Analyze with Gemini via direct HTTP API
+        analysis = await analyze_pr_with_gemini_http(diff_content, pr_body, pr_title, pr_author)
         
         # Format the draft review
         draft_review = format_review_comment(analysis, pr_author)
@@ -85,16 +77,16 @@ async def webhook(request: Request):
     
     return {"status": "ignored"}
 
-async def analyze_pr_with_gemini(diff: str, pr_body: str, pr_title: str, author: str) -> str:
-    """Use Google Gemini to analyze the PR."""
+async def analyze_pr_with_gemini_http(diff: str, pr_body: str, pr_title: str, author: str) -> str:
+    """Use Google Gemini via direct HTTP API."""
     
-    if not model:
+    if not GEMINI_API_KEY:
         return "⚠️ Gemini API key not configured. Please add GEMINI_API_KEY to environment variables."
     
-    # Limit diff length to avoid token limits
+    # Limit diff length
     diff_preview = diff[:15000]
     
-    # Build the prompt as a regular string, not an f-string
+    # Build the prompt
     prompt_lines = [
         "You are a code review expert analyzing a pull request for the Mixxx DJ software project.",
         "",
@@ -139,12 +131,44 @@ async def analyze_pr_with_gemini(diff: str, pr_body: str, pr_title: str, author:
     
     prompt = "\n".join(prompt_lines)
     
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        print(f"❌ Gemini API error: {str(e)}")
-        return f"⚠️ Error analyzing PR: {str(e)}\n\nPlease try again or review manually."
+    # Gemini API endpoint
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ]
+    }
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(url, json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Extract the text from the response
+                try:
+                    text = result["candidates"][0]["content"]["parts"][0]["text"]
+                    return text
+                except (KeyError, IndexError):
+                    print(f"❌ Unexpected response structure: {json.dumps(result, indent=2)}")
+                    return "⚠️ Error parsing Gemini response. Please try again or review manually."
+            else:
+                error_msg = f"Gemini API error: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return f"⚠️ {error_msg}"
+                
+        except httpx.TimeoutException:
+            return "⚠️ Gemini API timeout. The PR diff might be too large. Please review manually."
+        except Exception as e:
+            error_msg = f"Error calling Gemini: {str(e)}"
+            print(f"❌ {error_msg}")
+            return f"⚠️ {error_msg}"
 
 def format_review_comment(analysis: str, author: str) -> str:
     """Format the analysis as a GitHub review comment."""
