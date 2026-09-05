@@ -18,7 +18,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Configure Gemini
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')  # Free tier model
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
     model = None
 
@@ -91,15 +91,84 @@ async def analyze_pr_with_gemini(diff: str, pr_body: str, pr_title: str, author:
     if not model:
         return "⚠️ Gemini API key not configured. Please add GEMINI_API_KEY to environment variables."
     
-    # Limit diff length to avoid token limits (Gemini Flash has generous limits)
-    diff_preview = diff[:15000]  # Gemini Flash can handle ~1M tokens, but we'll be safe
+    # Limit diff length to avoid token limits
+    diff_preview = diff[:15000]
     
-    prompt = f"""
-You are a code review expert analyzing a pull request for the Mixxx DJ software project.
+    # Build the prompt as a regular string, not an f-string
+    prompt_lines = [
+        "You are a code review expert analyzing a pull request for the Mixxx DJ software project.",
+        "",
+        "Pull Request Details:",
+        f"- Title: {pr_title}",
+        f"- Author: @{author}",
+        f"- Description: {pr_body[:1000]}",
+        "",
+        "Code Changes (Diff):",
+        "```",
+        diff_preview,
+        "```",
+        "",
+        "Please provide a thorough code review focusing on:",
+        "",
+        "1. Summary: A brief overview of what this PR does (1-2 sentences).",
+        "",
+        "2. AI Detection: Does this code show signs of being AI-generated? Look for:",
+        "   - Excessive or robotic comments",
+        "   - Unnatural variable/function names",
+        "   - Repetitive patterns that don't match project style",
+        "   - Code that doesn't fit the codebase architecture",
+        "   - Overly verbose or textbook-style implementations",
+        "   Rate as: HIGH / MEDIUM / LOW / NONE and explain why.",
+        "",
+        "3. Code Quality: Evaluate the code quality:",
+        "   - Does it follow Mixxx's coding standards?",
+        "   - Are there any obvious bugs or logic errors?",
+        "   - Is the code maintainable?",
+        "",
+        "4. Understanding Questions: Generate 3-5 specific questions to ask the contributor to verify they understand their own code. These should be about:",
+        "   - Why specific design decisions were made",
+        "   - Edge cases they might not have considered",
+        "   - How their code interacts with existing Mixxx features",
+        "",
+        "5. Risks & Edge Cases: What potential issues should a reviewer look for?",
+        "",
+        "6. Recommendation: Should this PR be merged, need changes, or needs more discussion?",
+        "",
+        "Keep your response concise but thorough. Write in a professional but approachable tone."
+    ]
+    
+    prompt = "\n".join(prompt_lines)
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"❌ Gemini API error: {str(e)}")
+        return f"⚠️ Error analyzing PR: {str(e)}\n\nPlease try again or review manually."
 
-**Pull Request Details:**
-- Title: {pr_title}
-- Author: @{author}
-- Description: {pr_body[:1000]}
-
-**Code Changes (Diff):**
+def format_review_comment(analysis: str, author: str) -> str:
+    """Format the analysis as a GitHub review comment."""
+    
+    lines = [
+        "## 🤖 AI-Assisted Code Review (Draft)",
+        "",
+        "> **Note from maintainer:** This is an automated analysis using Google Gemini. Please edit this review before posting. Remove, add, or modify any part as you see fit.",
+        "",
+        "---",
+        "",
+        analysis,
+        "",
+        "---",
+        "",
+        "### 📋 Maintainer Checklist Before Posting:",
+        "- [ ] Verify the AI detection assessment",
+        "- [ ] Check that the questions are relevant",
+        "- [ ] Add any personal observations",
+        "- [ ] Decide: APPROVE / REQUEST CHANGES / COMMENT",
+        "",
+        "### 🔗 Quick Links:",
+        "- [View PR](https://github.com/mixxxdj/mixxx/pulls)",
+        "- [Mixxx Contributing Guide](https://github.com/mixxxdj/mixxx/blob/main/CONTRIBUTING.md)"
+    ]
+    
+    return "\n".join(lines)
